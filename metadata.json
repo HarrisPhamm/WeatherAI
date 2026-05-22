@@ -1,0 +1,6 @@
+{
+  "name": "Thời Tiết AI",
+  "description": "Ứng dụng xem thời tiết thông minh tích hợp AI phân tích và đề xuất trang phục hàng ngày.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
