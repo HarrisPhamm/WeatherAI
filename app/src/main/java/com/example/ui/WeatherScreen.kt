@@ -378,18 +378,6 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
         }
     }
 
-    val calculateFeelsLike: (Double, Double, Double) -> Double = { tempCelsius, relativeHumidity, windSpeedKmh ->
-        try {
-            val e = (relativeHumidity / 100.0) * 6.105 * kotlin.math.exp((17.27 * tempCelsius) / (237.7 + tempCelsius))
-            val ws = windSpeedKmh / 3.6
-            val at = tempCelsius + 0.33 * e - 0.70 * ws - 4.0
-            val diff = at - tempCelsius
-            if (diff in -12.0..12.0) at else tempCelsius + diff.coerceIn(-6.0, 6.0)
-        } catch (e: Exception) {
-            tempCelsius
-        }
-    }
-
     val todayFormatted = remember {
         try {
             val cal = java.util.Calendar.getInstance()
@@ -815,9 +803,7 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                                                 modifier = Modifier.padding(top = 4.dp)
                                             )
 
-                                            val humValForFeelsLike = (hourly?.relativeHumidity2m?.firstOrNull() ?: 60).toDouble()
-                                            val windValForFeelsLike = current.windspeed
-                                            val feelsLikeVal = calculateFeelsLike(current.temperature, humValForFeelsLike, windValForFeelsLike)
+                                            val feelsLikeVal = current.feelsLike ?: current.temperature
                                             
                                             Text(
                                                 text = "Cảm giác như ${formatTemp(feelsLikeVal)}",

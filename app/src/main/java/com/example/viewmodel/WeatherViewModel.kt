@@ -311,7 +311,21 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                         fetchAccuWeather(city.latitude, city.longitude)
                     }
                     else -> {
-                        NetworkClient.weatherApi.getForecast(city.latitude, city.longitude)
+                        val raw = NetworkClient.weatherApi.getForecast(city.latitude, city.longitude)
+                        var apparentTemp = raw.hourly?.apparentTemperature?.firstOrNull()
+                        try {
+                            val curTimeStr = raw.currentWeather?.time
+                            if (!curTimeStr.isNullOrEmpty() && raw.hourly != null) {
+                                val matchIdx = raw.hourly.time.indexOfFirst { it.startsWith(curTimeStr.substring(0, 13)) }
+                                if (matchIdx >= 0) {
+                                    apparentTemp = raw.hourly.apparentTemperature?.getOrNull(matchIdx)
+                                }
+                            }
+                        } catch (e: java.lang.Exception) {
+                            // ignore / fallback to firstOrNull
+                        }
+                        val updatedCurrent = raw.currentWeather?.copy(feelsLike = apparentTemp)
+                        raw.copy(currentWeather = updatedCurrent)
                     }
                 }
                 _uiState.value = WeatherUiState.Success(response, city)
@@ -370,11 +384,12 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             windspeed = currentItem.wind?.speed?.metric?.value ?: 2.0,
             winddirection = 0.0,
             weathercode = com.example.network.mapAccuWeatherIconToWmo(currentItem.weatherIcon ?: 1),
-            time = com.example.network.convertUtcToLocalString(currentItem.localObservationDateTime ?: "")
+            time = com.example.network.convertUtcToApproxLocalString(currentItem.localObservationDateTime ?: "", lon),
+            feelsLike = currentItem.realFeelTemperature?.metric?.value ?: currentItem.temperature?.metric?.value
         )
         
         // 2. Hourly
-        val hourlyTimes = hourlyList.map { com.example.network.convertUtcToLocalString(it.dateTime) }
+        val hourlyTimes = hourlyList.map { com.example.network.convertUtcToApproxLocalString(it.dateTime, lon) }
         val hourlyTemps = hourlyList.map { it.temperature?.value ?: 25.0 }
         val hourlyHumids = hourlyList.map { it.relativeHumidity ?: 70 }
         val hourlyCodes = hourlyList.map { com.example.network.mapAccuWeatherIconToWmo(it.weatherIcon ?: 1) }
@@ -392,7 +407,7 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         
         // 3. Daily
         val dailyList = dailyParent.dailyForecasts ?: emptyList()
-        val dailyTimes = dailyList.map { com.example.network.convertUtcToLocalString(it.date).substringBefore("T") }
+        val dailyTimes = dailyList.map { com.example.network.convertUtcToApproxLocalString(it.date, lon).substringBefore("T") }
         val dailyWeatherCodes = dailyList.map { com.example.network.mapAccuWeatherIconToWmo(it.day?.icon ?: 1) }
         val dailyTempMax = dailyList.map { it.temperature?.maximum?.value ?: 25.0 }
         val dailyTempMin = dailyList.map { it.temperature?.minimum?.value ?: 18.0 }

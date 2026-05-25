@@ -33,13 +33,15 @@ data class CurrentWeather(
     @Json(name = "windspeed") val windspeed: Double,
     @Json(name = "winddirection") val winddirection: Double,
     @Json(name = "weathercode") val weathercode: Int,
-    @Json(name = "time") val time: String
+    @Json(name = "time") val time: String,
+    @Json(name = "feels_like") val feelsLike: Double? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class HourlyForecast(
     @Json(name = "time") val time: List<String>,
     @Json(name = "temperature_2m") val temperature2m: List<Double>,
+    @Json(name = "apparent_temperature") val apparentTemperature: List<Double>? = null,
     @Json(name = "relative_humidity_2m") val relativeHumidity2m: List<Int>?,
     @Json(name = "weather_code") val weatherCode: List<Int>?,
     @Json(name = "wind_speed_10m") val windSpeed10m: List<Double>?,

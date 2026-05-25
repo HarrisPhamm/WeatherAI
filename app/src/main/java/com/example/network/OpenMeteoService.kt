@@ -35,7 +35,7 @@ interface WeatherApi {
         @Query("latitude") latitude: Double,
         @Query("longitude") longitude: Double,
         @Query("current_weather") currentWeather: Boolean = true,
-        @Query("hourly") hourly: String = "temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,precipitation_probability",
+        @Query("hourly") hourly: String = "temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m,precipitation_probability",
         @Query("daily") daily: String = "weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,precipitation_probability_max",
         @Query("timezone") timezone: String = "auto"
     ): WeatherResponse
@@ -161,6 +161,7 @@ data class AccuCurrentCondition(
     @Json(name = "WeatherIcon") val weatherIcon: Int?,
     @Json(name = "IsDayTime") val isDayTime: Boolean?,
     @Json(name = "Temperature") val temperature: AccuTemperature?,
+    @Json(name = "RealFeelTemperature") val realFeelTemperature: AccuTemperature?,
     @Json(name = "RelativeHumidity") val relativeHumidity: Int?,
     @Json(name = "Wind") val wind: AccuWind?,
     @Json(name = "UVIndex") val uvIndex: Double?
@@ -370,12 +371,114 @@ fun convertUtcToLocalString(utcString: String): String {
     return clean
 }
 
+fun convertUtcToApproxLocalString(utcString: String, lon: Double): String {
+    if (utcString.isEmpty()) return ""
+    try {
+        val formats = listOf(
+            "yyyy-MM-dd'T'HH:mm:ssXXX", 
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",  
+            "yyyy-MM-dd'T'HH:mm'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm"
+        )
+        
+        var date: java.util.Date? = null
+        for (fmt in formats) {
+            try {
+                val parser = java.text.SimpleDateFormat(fmt, java.util.Locale.US)
+                if (fmt.contains("'Z'") || utcString.endsWith("Z")) {
+                    parser.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }
+                date = parser.parse(utcString)
+                if (date != null) break
+            } catch (e: Exception) {
+                // Ignore and try next
+            }
+        }
+        
+        if (date != null) {
+            val offsetHours = Math.round(lon / 15.0).toInt()
+            val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm", java.util.Locale.US)
+            val sign = if (offsetHours >= 0) "+" else "-"
+            val absHours = Math.abs(offsetHours)
+            val tzId = String.format(java.util.Locale.US, "GMT%s%02d:00", sign, absHours)
+            formatter.timeZone = java.util.TimeZone.getTimeZone(tzId)
+            return formatter.format(date)
+        }
+    } catch (e: Exception) {
+        // ignore and fallback
+    }
+    return convertUtcToLocalString(utcString)
+}
+
+fun parseLiteralLocalString(timeString: String): String {
+    if (timeString.isEmpty()) return ""
+    try {
+        var clean = timeString
+        if (clean.contains("T")) {
+            val datePart = clean.substringBefore("T")
+            var timePart = clean.substringAfter("T")
+            
+            if (timePart.contains("-")) {
+                timePart = timePart.substringBefore("-")
+            } else if (timePart.contains("+")) {
+                timePart = timePart.substringBefore("+")
+            } else if (timePart.endsWith("Z")) {
+                timePart = timePart.substringBefore("Z")
+            }
+            
+            if (timePart.count { it == ':' } == 2) {
+                timePart = timePart.substringBeforeLast(":")
+            }
+            
+            return "${datePart}T${timePart}"
+        }
+    } catch (e: Exception) {
+        // fallback
+    }
+    return timeString
+}
+
+fun calculateStandardFeelsLike(temp: Double, humidity: Double, windSpeedKmh: Double): Double {
+    return try {
+        if (temp <= 10.0 && windSpeedKmh >= 4.8) {
+            13.12 + 0.6215 * temp - 11.37 * Math.pow(windSpeedKmh, 0.16) + 0.3965 * temp * Math.pow(windSpeedKmh, 0.16)
+        } else if (temp >= 26.7) {
+            val hiSimple = 0.5 * (temp + 61.0 + ((temp - 68.0) * 1.2) + (humidity * 0.094))
+            if ((hiSimple + temp) / 2.0 >= 26.7) {
+                val t2 = temp * temp
+                val h2 = humidity * humidity
+                var hi = -8.78469475556 + 1.61139411 * temp + 2.33854883889 * humidity - 
+                         0.14611605 * temp * humidity - 0.012308094 * t2 - 0.0164248277778 * h2 + 
+                         0.002211732 * t2 * humidity + 0.00072546 * temp * h2 - 0.000003582 * t2 * h2
+                
+                if (humidity < 13.0 && temp in 26.7..44.4) {
+                    val adj = ((13.0 - humidity) / 4.0) * java.lang.Math.sqrt((17.0 - java.lang.Math.abs(temp - 95.0)) / 17.0)
+                    hi -= adj
+                } else if (humidity > 85.0 && temp in 26.7..30.5) {
+                    val adj = ((humidity - 85.0) / 10.0) * ((30.5 - temp) / 5.0)
+                    hi += adj
+                }
+                hi
+            } else {
+                hiSimple
+            }
+        } else {
+            val e = (humidity / 100.0) * 6.105 * Math.exp((17.27 * temp) / (237.7 + temp))
+            val ws = windSpeedKmh / 3.6
+            temp + 0.33 * e - 0.70 * ws - 4.0
+        }
+    } catch (e: Exception) {
+        temp
+    }
+}
+
 fun MetNorwayResponse.toWeatherResponse(lat: Double, lon: Double): WeatherResponse {
     val rawTimeseries = this.properties?.timeseries ?: emptyList()
     
-    // Map UTC times to local system time zone strings
+    // Map UTC times to approx local timezone strings for the given city
     val timeseries = rawTimeseries.map { series ->
-        series.copy(time = convertUtcToLocalString(series.time))
+        series.copy(time = convertUtcToApproxLocalString(series.time, lon))
     }
     
     // 1. Current Weather
@@ -388,13 +491,18 @@ fun MetNorwayResponse.toWeatherResponse(lat: Double, lon: Double): WeatherRespon
     
     val rawWind = (currentDetails?.windSpeed ?: 2.0) * 3.6
     val roundedWind = kotlin.math.round(rawWind * 100.0) / 100.0
+    
+    val airTemp = currentDetails?.airTemperature ?: 25.0
+    val relativeHum = currentDetails?.relativeHumidity ?: 70.0
+    val feelsLikeVal = calculateStandardFeelsLike(airTemp, relativeHum, rawWind)
 
     val currentWeather = CurrentWeather(
-        temperature = currentDetails?.airTemperature ?: 25.0,
+        temperature = airTemp,
         windspeed = roundedWind, // m/s to km/h rounded to 2 decimal places
         winddirection = currentDetails?.windFromDirection ?: 0.0,
         weathercode = mapMetNorwaySymbolToWmo(currentSymbol),
-        time = currentSeries?.time ?: ""
+        time = currentSeries?.time ?: "",
+        feelsLike = feelsLikeVal
     )
     
     // 2. Hourly Forecast
