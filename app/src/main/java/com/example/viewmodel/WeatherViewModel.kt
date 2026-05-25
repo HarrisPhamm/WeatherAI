@@ -10,12 +10,22 @@ import com.example.data.FavoriteCity
 import com.example.data.GeocodeResult
 import com.example.data.WeatherResponse
 import com.example.data.WeatherRepository
+import com.example.data.CurrentWeather
+import com.example.data.HourlyForecast
+import com.example.data.DailyForecast
 import com.example.network.GeminiClient
 import com.example.network.GeminiContent
 import com.example.network.GeminiPart
 import com.example.network.GeminiRequest
 import com.example.network.NetworkClient
+import com.example.network.toWeatherResponse
+import com.example.network.mapAccuWeatherIconToWmo
+import com.example.network.AccuCurrentCondition
+import com.example.network.AccuHourlyForecast
+import com.example.network.AccuDailyForecastParent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,6 +68,41 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
         _tempUnitSetting.value = unit
     }
 
+    private val _weatherSourceSetting = MutableStateFlow(prefs.getString("weather_source", "open_meteo") ?: "open_meteo")
+    val weatherSourceSetting: StateFlow<String> = _weatherSourceSetting.asStateFlow()
+
+    private val _accuApiKey = MutableStateFlow(prefs.getString("accu_api_key", "") ?: "")
+    val accuApiKey: StateFlow<String> = _accuApiKey.asStateFlow()
+
+    fun setWeatherSourceSetting(source: String) {
+        prefs.edit().putString("weather_source", source).apply()
+        _weatherSourceSetting.value = source
+        refreshCurrentWeather()
+    }
+
+    fun setAccuApiKey(key: String) {
+        prefs.edit().putString("accu_api_key", key).apply()
+        _accuApiKey.value = key
+        if (_weatherSourceSetting.value == "accuweather") {
+            refreshCurrentWeather()
+        }
+    }
+
+    fun getFriendlySourceName(): String {
+        return when (_weatherSourceSetting.value) {
+            "met_norway" -> "MET Norway (ECMWF)"
+            "accuweather" -> "AccuWeather"
+            else -> "Open-Meteo"
+        }
+    }
+
+    fun refreshCurrentWeather() {
+        val city = _currentCity.value
+        if (city != null) {
+            fetchWeather(city)
+        }
+    }
+
     private val _uiState = MutableStateFlow<WeatherUiState>(WeatherUiState.Idle)
     val uiState: StateFlow<WeatherUiState> = _uiState.asStateFlow()
 
@@ -75,6 +120,32 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
 
     private val _isGeminiLoading = MutableStateFlow(false)
     val isGeminiLoading: StateFlow<Boolean> = _isGeminiLoading.asStateFlow()
+
+    private val _userApiKey = MutableStateFlow(prefs.getString("user_gemini_api_key", "") ?: "")
+    val userApiKey: StateFlow<String> = _userApiKey.asStateFlow()
+
+    fun setUserApiKey(key: String) {
+        prefs.edit().putString("user_gemini_api_key", key).apply()
+        _userApiKey.value = key
+        
+        val currentState = _uiState.value
+        if (currentState is WeatherUiState.Success) {
+            _geminiState.value = null
+            generateGeminiRecommendation(currentState.city, currentState.weather)
+        }
+    }
+
+    fun getActiveApiKey(): String {
+        val saved = _userApiKey.value.trim()
+        if (saved.isNotEmpty()) {
+            return saved
+        }
+        val buildKey = BuildConfig.GEMINI_API_KEY
+        if (buildKey.isNotEmpty() && buildKey != "MY_GEMINI_API_KEY" && buildKey != "YOUR_GEMINI_API_KEY") {
+            return buildKey
+        }
+        return ""
+    }
 
     private val _currentCity = MutableStateFlow<FavoriteCity?>(null)
     val currentCity: StateFlow<FavoriteCity?> = _currentCity.asStateFlow()
@@ -230,7 +301,19 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
             _geminiState.value = null // reset Gemini recommendation
             _weatherAlerts.value = emptyList() // clear alerts
             try {
-                val response = NetworkClient.weatherApi.getForecast(city.latitude, city.longitude)
+                val source = _weatherSourceSetting.value
+                val response = when (source) {
+                    "met_norway" -> {
+                        NetworkClient.metNorwayApi.getCompact(city.latitude, city.longitude)
+                            .toWeatherResponse(city.latitude, city.longitude)
+                    }
+                    "accuweather" -> {
+                        fetchAccuWeather(city.latitude, city.longitude)
+                    }
+                    else -> {
+                        NetworkClient.weatherApi.getForecast(city.latitude, city.longitude)
+                    }
+                }
                 _uiState.value = WeatherUiState.Success(response, city)
                 
                 // Generate alerts
@@ -239,9 +322,99 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                 // Trigger Gemini recommendation
                 generateGeminiRecommendation(city, response)
             } catch (e: Exception) {
-                _uiState.value = WeatherUiState.Error("Không thể tải dữ liệu thời tiết: ${e.localizedMessage}")
+                _uiState.value = WeatherUiState.Error("Không thể tải dữ liệu thời tiết (${getFriendlySourceName()}): ${e.localizedMessage}")
             }
         }
+    }
+
+    private suspend fun fetchAccuWeather(latitude: Double, longitude: Double): WeatherResponse = coroutineScope {
+        val apiKey = _accuApiKey.value.trim()
+        if (apiKey.isEmpty()) {
+            throw Exception("Vui lòng cấu hình AccuWeather API Key trong mục Cài đặt.")
+        }
+        
+        // 1. Get location key
+        val qString = "$latitude,$longitude"
+        val locationResp = NetworkClient.accuWeatherApi.geopositionSearch(apiKey, qString)
+        val locationKey = locationResp.key
+        
+        // 2. Fetch current, hourly, and daily forecasts in parallel using coroutine scopes
+        val currentDeferred = async(Dispatchers.IO) {
+            NetworkClient.accuWeatherApi.getCurrentConditions(locationKey, apiKey)
+        }
+        val hourlyDeferred = async(Dispatchers.IO) {
+            NetworkClient.accuWeatherApi.get12HourForecast(locationKey, apiKey)
+        }
+        val dailyDeferred = async(Dispatchers.IO) {
+            NetworkClient.accuWeatherApi.get5DayForecast(locationKey, apiKey)
+        }
+        
+        val currentList = currentDeferred.await()
+        val hourlyList = hourlyDeferred.await()
+        val dailyParent = dailyDeferred.await()
+        
+        mapAccuWeatherToWeatherResponse(latitude, longitude, currentList, hourlyList, dailyParent)
+    }
+
+    private fun mapAccuWeatherToWeatherResponse(
+        lat: Double,
+        lon: Double,
+        currentList: List<AccuCurrentCondition>,
+        hourlyList: List<AccuHourlyForecast>,
+        dailyParent: AccuDailyForecastParent
+    ): WeatherResponse {
+        val currentItem = currentList.firstOrNull() ?: throw Exception("Không có dữ liệu thời tiết thực tế từ AccuWeather.")
+        
+        val currentWeather = CurrentWeather(
+            temperature = currentItem.temperature?.metric?.value ?: 25.0,
+            windspeed = currentItem.wind?.speed?.metric?.value ?: 2.0,
+            winddirection = 0.0,
+            weathercode = com.example.network.mapAccuWeatherIconToWmo(currentItem.weatherIcon ?: 1),
+            time = com.example.network.convertUtcToLocalString(currentItem.localObservationDateTime ?: "")
+        )
+        
+        // 2. Hourly
+        val hourlyTimes = hourlyList.map { com.example.network.convertUtcToLocalString(it.dateTime) }
+        val hourlyTemps = hourlyList.map { it.temperature?.value ?: 25.0 }
+        val hourlyHumids = hourlyList.map { it.relativeHumidity ?: 70 }
+        val hourlyCodes = hourlyList.map { com.example.network.mapAccuWeatherIconToWmo(it.weatherIcon ?: 1) }
+        val hourlyWinds = hourlyList.map { it.wind?.speed?.value ?: 2.0 }
+        val hourlyPrecipProbs = hourlyList.map { it.precipitationProbability ?: 0 }
+        
+        val hourlyForecast = HourlyForecast(
+            time = hourlyTimes,
+            temperature2m = hourlyTemps,
+            relativeHumidity2m = hourlyHumids,
+            weatherCode = hourlyCodes,
+            windSpeed10m = hourlyWinds,
+            precipitationProbability = hourlyPrecipProbs
+        )
+        
+        // 3. Daily
+        val dailyList = dailyParent.dailyForecasts ?: emptyList()
+        val dailyTimes = dailyList.map { com.example.network.convertUtcToLocalString(it.date).substringBefore("T") }
+        val dailyWeatherCodes = dailyList.map { com.example.network.mapAccuWeatherIconToWmo(it.day?.icon ?: 1) }
+        val dailyTempMax = dailyList.map { it.temperature?.maximum?.value ?: 25.0 }
+        val dailyTempMin = dailyList.map { it.temperature?.minimum?.value ?: 18.0 }
+        val dailyUv = dailyList.map { 5.0 }
+        val dailyPrecipProbMax = dailyList.map { it.day?.precipitationProbability ?: 0 }
+        
+        val dailyForecast = DailyForecast(
+            time = dailyTimes,
+            weatherCode = dailyWeatherCodes,
+            temperature2mMax = dailyTempMax,
+            temperature2mMin = dailyTempMin,
+            uvIndexMax = dailyUv,
+            precipitationProbabilityMax = dailyPrecipProbMax
+        )
+        
+        return WeatherResponse(
+            latitude = lat,
+            longitude = lon,
+            currentWeather = currentWeather,
+            hourly = hourlyForecast,
+            daily = dailyForecast
+        )
     }
 
     private fun analyzeWeatherAlerts(response: WeatherResponse) {
@@ -337,9 +510,9 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun generateGeminiRecommendation(city: FavoriteCity, weather: WeatherResponse) {
-        val apiKey = BuildConfig.GEMINI_API_KEY
-        if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
-            _geminiState.value = "⚠️ Hệ thống chưa nhận cấu hình Khóa API Gemini.\nHãy nhập API Key hợp lệ trong bảng điều khiển AI Studio để nhận phân tích quần áo thời trang, chỉ số nắng gió và kế hoạch dạo chơi tự động từ trợ lý thông minh!"
+        val apiKey = getActiveApiKey()
+        if (apiKey.isEmpty()) {
+            _geminiState.value = "⚠️ Chưa cấu hình API Key Gemini.\nVui lòng nhập API Key để bắt đầu nhận phân tích quần áo thời trang, sức khỏe và dạo chơi tự động từ AI!"
             return
         }
 

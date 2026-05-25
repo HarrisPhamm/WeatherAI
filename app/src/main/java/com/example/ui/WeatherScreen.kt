@@ -142,6 +142,7 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
     val isGeminiLoading by viewModel.isGeminiLoading.collectAsState()
     val currentCity by viewModel.currentCity.collectAsState()
     val weatherAlerts by viewModel.weatherAlerts.collectAsState()
+    val userApiKey by viewModel.userApiKey.collectAsState()
 
     var hourlyRange by remember { mutableStateOf(24) } // hourly range (24 or 48 hours)
     var selectedTab by remember { mutableStateOf(0) }
@@ -348,6 +349,8 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
 
     val tempUnit by viewModel.tempUnitSetting.collectAsState()
     val themeSetting by viewModel.themeSetting.collectAsState()
+    val weatherSource by viewModel.weatherSourceSetting.collectAsState()
+    val accuApiKey by viewModel.accuApiKey.collectAsState()
     val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
     val isDark = when (themeSetting) {
         "dark" -> true
@@ -372,6 +375,18 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
             "${((tempCelsius * 9.0 / 5.0) + 32.0).toInt()}°F"
         } else {
             "${tempCelsius.toInt()}°C"
+        }
+    }
+
+    val calculateFeelsLike: (Double, Double, Double) -> Double = { tempCelsius, relativeHumidity, windSpeedKmh ->
+        try {
+            val e = (relativeHumidity / 100.0) * 6.105 * kotlin.math.exp((17.27 * tempCelsius) / (237.7 + tempCelsius))
+            val ws = windSpeedKmh / 3.6
+            val at = tempCelsius + 0.33 * e - 0.70 * ws - 4.0
+            val diff = at - tempCelsius
+            if (diff in -12.0..12.0) at else tempCelsius + diff.coerceIn(-6.0, 6.0)
+        } catch (e: Exception) {
+            tempCelsius
         }
     }
 
@@ -474,6 +489,7 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                     HeaderSection(
                         currentCityName = currentCity?.name ?: "Hà Nội",
                         todayDate = todayFormatted,
+                        weatherSourceName = viewModel.getFriendlySourceName(),
                         onSearchToggle = { showSearchRow = !showSearchRow },
                         searchActive = showSearchRow,
                         onLocateClick = requestLocationDetails,
@@ -638,7 +654,31 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                 }
 
                 // Core Scrollable area
-                when (uiState) {
+                if (selectedTab == 3) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        SettingsTabContent(
+                            viewModel = viewModel,
+                            tempUnit = tempUnit,
+                            themeSetting = themeSetting,
+                            weatherSource = weatherSource,
+                            accuApiKey = accuApiKey,
+                            userApiKey = userApiKey,
+                            themeSurface = themeSurface,
+                            themeBorder = themeBorder,
+                            themeText = themeText,
+                            themeSecondaryText = themeSecondaryText,
+                            themeLavender = themeLavender,
+                            themePillText = themePillText,
+                            isDark = isDark
+                        )
+                    }
+                } else {
+                    when (uiState) {
                     is WeatherUiState.Loading -> {
                         Box(
                             modifier = Modifier
@@ -772,6 +812,18 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                                                 fontSize = 18.sp,
                                                 fontWeight = FontWeight.Normal,
                                                 color = themeMutedText,
+                                                modifier = Modifier.padding(top = 4.dp)
+                                            )
+
+                                            val humValForFeelsLike = (hourly?.relativeHumidity2m?.firstOrNull() ?: 60).toDouble()
+                                            val windValForFeelsLike = current.windspeed
+                                            val feelsLikeVal = calculateFeelsLike(current.temperature, humValForFeelsLike, windValForFeelsLike)
+                                            
+                                            Text(
+                                                text = "Cảm giác như ${formatTemp(feelsLikeVal)}",
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = themeLavender,
                                                 modifier = Modifier.padding(top = 4.dp)
                                             )
 
@@ -1003,31 +1055,102 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
 
                                                 Spacer(modifier = Modifier.height(12.dp))
 
-                                                if (isGeminiLoading) {
+                                                val activeKeyIsMissing = viewModel.getActiveApiKey().isEmpty()
+
+                                                if (activeKeyIsMissing) {
+                                                    Text(
+                                                        text = "⚠️ Trợ lý AI chưa được cấu hình API Key.\nNhập API Key Gemini để dùng Cố vấn Thời tiết nhận phân tích quần áo thời trang, sức khỏe và dạo chơi từ AI!",
+                                                        fontSize = 13.sp,
+                                                        color = themeSecondaryText,
+                                                        lineHeight = 20.sp
+                                                    )
+                                                    Spacer(modifier = Modifier.height(12.dp))
+
+                                                    var keyInput by remember { mutableStateOf("") }
+                                                    OutlinedTextField(
+                                                        value = keyInput,
+                                                        onValueChange = { keyInput = it },
+                                                        placeholder = { Text("Nhập API Key ở đây...", fontSize = 13.sp, color = themeMutedText) },
+                                                        singleLine = true,
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                                                        colors = OutlinedTextFieldDefaults.colors(
+                                                            focusedBorderColor = themeLavender,
+                                                            unfocusedBorderColor = themeBorder,
+                                                            focusedTextColor = themeText,
+                                                            unfocusedTextColor = themeText
+                                                        )
+                                                    )
+                                                    Spacer(modifier = Modifier.height(10.dp))
                                                     Row(
                                                         modifier = Modifier.fillMaxWidth(),
-                                                        horizontalArrangement = Arrangement.Center,
-                                                        verticalAlignment = Alignment.CenterVertically
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                                     ) {
-                                                        CircularProgressIndicator(
-                                                            color = themeLavender,
-                                                            strokeWidth = 2.dp,
-                                                            modifier = Modifier.size(18.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Text(
-                                                            "Gemini AI đang nhận định thời tiết...",
-                                                            fontSize = 13.sp,
-                                                            color = themeMutedText
-                                                        )
+                                                        Button(
+                                                            onClick = {
+                                                                if (keyInput.trim().isNotEmpty()) {
+                                                                    viewModel.setUserApiKey(keyInput.trim())
+                                                                }
+                                                            },
+                                                            colors = ButtonDefaults.buttonColors(containerColor = themeLavender),
+                                                            shape = RoundedCornerShape(12.dp),
+                                                            modifier = Modifier.weight(1f)
+                                                        ) {
+                                                            Text("Lưu API Key", color = themePillText, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                                        }
+
+                                                        val context = androidx.compose.ui.platform.LocalContext.current
+                                                        OutlinedButton(
+                                                            onClick = {
+                                                                val intent = android.content.Intent(
+                                                                    android.content.Intent.ACTION_VIEW,
+                                                                    android.net.Uri.parse("https://aistudio.google.com/")
+                                                                )
+                                                                context.startActivity(intent)
+                                                            },
+                                                            shape = RoundedCornerShape(12.dp),
+                                                            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder)
+                                                        ) {
+                                                            Text("Lấy Key 🔑", color = themeText, fontSize = 12.sp)
+                                                        }
                                                     }
                                                 } else {
-                                                    Text(
-                                                        text = geminiText ?: "Đang phân tích dữ liệu thời tiết của vùng qua trí tuệ nhân tạo Gemini AI...",
-                                                        fontSize = 13.5.sp,
-                                                        color = themeText,
-                                                        lineHeight = 21.sp
-                                                    )
+                                                    if (isGeminiLoading) {
+                                                        Row(
+                                                            modifier = Modifier.fillMaxWidth(),
+                                                            horizontalArrangement = Arrangement.Center,
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            CircularProgressIndicator(
+                                                                color = themeLavender,
+                                                                strokeWidth = 2.dp,
+                                                                modifier = Modifier.size(18.dp)
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Text(
+                                                                "Gemini AI đang nhận định thời tiết...",
+                                                                fontSize = 13.sp,
+                                                                color = themeMutedText
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Text(
+                                                            text = geminiText ?: "Đang phân tích dữ liệu thời tiết của vùng qua trí tuệ nhân tạo Gemini AI...",
+                                                            fontSize = 13.5.sp,
+                                                            color = themeText,
+                                                            lineHeight = 21.sp
+                                                        )
+
+                                                        if (userApiKey.trim().isNotEmpty()) {
+                                                            Spacer(modifier = Modifier.height(12.dp))
+                                                            TextButton(
+                                                                onClick = { viewModel.setUserApiKey("") },
+                                                                modifier = Modifier.align(Alignment.End)
+                                                            ) {
+                                                                Text("Xóa API Key cá nhân 🗑️", fontSize = 11.sp, color = themeSecondaryText)
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -1198,121 +1321,6 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                                             )
                                         }
                                     }
-                                } else if (selectedTab == 3) {
-                                // Settings Tab: "Tab cài đặt cho những cài đặt cơ bản như theme, thang đo nhiệt độ đơn vị là gì"
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .verticalScroll(rememberScrollState())
-                                ) {
-                                        Text(
-                                            "Tùy chọn hiển thị & Đơn vị đo",
-                                            fontSize = 16.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = themeLavender,
-                                            modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
-                                        )
-
-                                        // Card 1: Temperature settings
-                                        Card(
-                                            shape = RoundedCornerShape(24.dp),
-                                            colors = CardDefaults.cardColors(containerColor = themeSurface),
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(Icons.Filled.Thermostat, contentDescription = null, tint = themeLavender)
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Đơn vị đo nhiệt độ", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                    modifier = Modifier.fillMaxWidth()
-                                                ) {
-                                                    listOf("C" to "Độ C (°C)", "F" to "Độ F (°F)").forEach { (valStr, label) ->
-                                                        val isSel = tempUnit == valStr
-                                                        FilterChip(
-                                                            selected = isSel,
-                                                            onClick = { viewModel.setTempUnitSetting(valStr) },
-                                                            label = { Text(label) },
-                                                            colors = FilterChipDefaults.filterChipColors(
-                                                                selectedContainerColor = themeLavender,
-                                                                selectedLabelColor = themePillText
-                                                            )
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(12.dp))
-
-                                        // Card 2: Theme selection
-                                        Card(
-                                            shape = RoundedCornerShape(24.dp),
-                                            colors = CardDefaults.cardColors(containerColor = themeSurface),
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    Icon(Icons.Filled.Palette, contentDescription = null, tint = themeLavender)
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text("Chế độ giao diện (Theme)", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
-                                                }
-                                                Spacer(modifier = Modifier.height(12.dp))
-                                                
-                                                listOf(
-                                                    "system" to "Mặc định hệ thống 📱",
-                                                    "light" to "Giao diện Sáng ☀️",
-                                                    "dark" to "Giao diện Tối 🌙"
-                                                ).forEach { (mode, label) ->
-                                                    Row(
-                                                        modifier = Modifier
-                                                            .fillMaxWidth()
-                                                            .clickable { viewModel.setThemeSetting(mode) }
-                                                            .padding(vertical = 10.dp),
-                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                        verticalAlignment = Alignment.CenterVertically
-                                                    ) {
-                                                        Text(label, color = themeText, fontSize = 14.sp)
-                                                        RadioButton(
-                                                            selected = themeSetting == mode,
-                                                            onClick = { viewModel.setThemeSetting(mode) },
-                                                            colors = RadioButtonDefaults.colors(
-                                                                selectedColor = themeLavender
-                                                            )
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(12.dp))
-
-                                        // Card 3: Information & credits
-                                        Card(
-                                            shape = RoundedCornerShape(24.dp),
-                                            colors = CardDefaults.cardColors(containerColor = themeSurface.copy(alpha = 0.5f)),
-                                            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder.copy(alpha = 0.5f)),
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Column(modifier = Modifier.padding(16.dp)) {
-                                                Text("Thông tin ứng dụng", fontWeight = FontWeight.Bold, color = themeLavender, fontSize = 13.sp)
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Text(
-                                                    "Weather AI là ứng dụng tra cứu thời tiết chuyên sâu kết hợp tính toán địa chỉ GPS thực tế, biểu đồ radar toàn cầu và tư vấn thời trang thông minh từ Gemini AI.",
-                                                    color = themeSecondaryText,
-                                                    fontSize = 12.sp,
-                                                    lineHeight = 18.sp
-                                                )
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("Cung cấp bởi: Open-Meteo & OpenStreetMap Nominatim", color = themeSecondaryText, fontSize = 11.sp)
-                                            }
-                                        }
-                                    }
                                 }
                             }
                     is WeatherUiState.Error -> {
@@ -1345,11 +1353,60 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                                         fontWeight = FontWeight.Medium
                                     )
                                     Spacer(modifier = Modifier.height(16.dp))
-                                    Button(
-                                        onClick = { currentCity?.let { viewModel.fetchWeather(it) } },
-                                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Text("Thử Lại")
+                                        Button(
+                                            onClick = { currentCity?.let { viewModel.fetchWeather(it) } },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                            modifier = Modifier.weight(1.0f)
+                                        ) {
+                                            Text("Thử Lại")
+                                        }
+
+                                        Button(
+                                            onClick = { selectedTab = 3 },
+                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier.weight(1.0f)
+                                        ) {
+                                            Text("Cài Đặt")
+                                        }
+                                    }
+
+                                    if (weatherSource == "accuweather") {
+                                        Spacer(modifier = Modifier.height(16.dp))
+                                        Text(
+                                            "Chọn nguồn thời tiết miễn phí không cần API Key:",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f),
+                                            textAlign = TextAlign.Center
+                                        )
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.setWeatherSourceSetting("open_meteo")
+                                                    currentCity?.let { viewModel.fetchWeather(it) }
+                                                },
+                                                modifier = Modifier.weight(1.0f)
+                                            ) {
+                                                Text("Open-Meteo", fontSize = 11.sp, maxLines = 1)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = {
+                                                    viewModel.setWeatherSourceSetting("met_norway")
+                                                    currentCity?.let { viewModel.fetchWeather(it) }
+                                                },
+                                                modifier = Modifier.weight(1.0f)
+                                            ) {
+                                                Text("Met Norway", fontSize = 11.sp, maxLines = 1)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1367,6 +1424,7 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
                     }
                 }
             }
+            }
         }
     }
 }
@@ -1375,6 +1433,7 @@ fun WeatherScreen(viewModel: WeatherViewModel) {
 fun HeaderSection(
     currentCityName: String,
     todayDate: String,
+    weatherSourceName: String,
     onSearchToggle: () -> Unit,
     searchActive: Boolean,
     onLocateClick: () -> Unit,
@@ -1408,7 +1467,7 @@ fun HeaderSection(
                 )
             }
             Text(
-                text = todayDate,
+                text = "$todayDate • $weatherSourceName",
                 fontSize = 13.sp,
                 color = ElegantDarkMutedText,
                 modifier = Modifier.padding(start = 26.dp, top = 2.dp)
@@ -1583,5 +1642,325 @@ fun WeatherTabItem(
             fontSize = 11.sp,
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
         )
+    }
+}
+
+@Composable
+fun SettingsTabContent(
+    viewModel: com.example.viewmodel.WeatherViewModel,
+    tempUnit: String,
+    themeSetting: String,
+    weatherSource: String,
+    accuApiKey: String,
+    userApiKey: String,
+    themeSurface: Color,
+    themeBorder: Color,
+    themeText: Color,
+    themeSecondaryText: Color,
+    themeLavender: Color,
+    themePillText: Color,
+    isDark: Boolean
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            "Tùy chọn hiển thị & Đơn vị đo",
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = themeLavender,
+            modifier = Modifier.padding(start = 4.dp, bottom = 12.dp)
+        )
+
+        // Card 1: Temperature settings
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = themeSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Thermostat, contentDescription = null, tint = themeLavender)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Đơn vị đo nhiệt độ", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    listOf("C" to "Độ C (°C)", "F" to "Độ F (°F)").forEach { (valStr, label) ->
+                        val isSel = tempUnit == valStr
+                        FilterChip(
+                            selected = isSel,
+                            onClick = { viewModel.setTempUnitSetting(valStr) },
+                            label = { Text(label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = themeLavender,
+                                selectedLabelColor = themePillText
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Card 2: Theme selection
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = themeSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Palette, contentDescription = null, tint = themeLavender)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Chế độ giao diện (Theme)", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                listOf(
+                    "system" to "Mặc định hệ thống 📱",
+                    "light" to "Giao diện Sáng ☀️",
+                    "dark" to "Giao diện Tối 🌙"
+                ).forEach { (mode, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.setThemeSetting(mode) }
+                            .padding(vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(label, color = themeText, fontSize = 14.sp)
+                        RadioButton(
+                            selected = themeSetting == mode,
+                            onClick = { viewModel.setThemeSetting(mode) },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = themeLavender
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Card: Gemini API Key in Settings
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = themeSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Lock, contentDescription = null, tint = themeLavender)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Cấu hình API Key Gemini", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Nhập API Key Gemini cá nhân của bạn để sử dụng tính năng cố vấn thời trang và dạo chơi từ AI. Khóa này được lưu trữ hoàn toàn bảo mật trên bộ nhớ thiết bị của bạn.",
+                    color = themeSecondaryText,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                var settingsKeyInput by remember(userApiKey) { mutableStateOf(userApiKey) }
+                OutlinedTextField(
+                    value = settingsKeyInput,
+                    onValueChange = { settingsKeyInput = it },
+                    label = { Text("Gemini API Key", fontSize = 12.sp) },
+                    placeholder = { Text("AIzaSy...", fontSize = 13.sp) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = themeLavender,
+                        unfocusedBorderColor = themeBorder,
+                        focusedTextColor = themeText,
+                        unfocusedTextColor = themeText
+                    )
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Button(
+                        onClick = {
+                            viewModel.setUserApiKey(settingsKeyInput.trim())
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = themeLavender),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1.0f)
+                    ) {
+                        Text("Lưu thiết lập", color = themePillText, fontSize = 12.sp)
+                    }
+
+                    if (userApiKey.trim().isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.setUserApiKey("")
+                                settingsKeyInput = ""
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder)
+                        ) {
+                            Text("Xóa Key", color = themeText, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Card: Weather Source configuration
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = themeSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.Cloud, contentDescription = null, tint = themeLavender)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Nguồn dữ liệu thời tiết", fontWeight = FontWeight.Bold, color = themeText, fontSize = 15.sp)
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Chọn nguồn thu thập dữ liệu dự báo thời tiết. Toàn cầu mặc định có Open-Meteo. MET Norway của châu Âu rất chính xác nhờ mô hình ECMWF. AccuWeather cho phép sử dụng chỉ số thực từ bộ máy thời tiết hàng đầu thế giới.",
+                    color = themeSecondaryText,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                listOf(
+                    "open_meteo" to "Open-Meteo (Mặc định)",
+                    "met_norway" to "MET Norway (Mô hình ECMWF Châu Âu)",
+                    "accuweather" to "AccuWeather (Cần nhập API Key)"
+                ).forEach { (sourceKey, sourceLabel) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.setWeatherSourceSetting(sourceKey) }
+                            .padding(vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(sourceLabel, color = themeText, fontSize = 13.sp)
+                        RadioButton(
+                            selected = weatherSource == sourceKey,
+                            onClick = { viewModel.setWeatherSourceSetting(sourceKey) },
+                            colors = RadioButtonDefaults.colors(
+                                selectedColor = themeLavender
+                            )
+                        )
+                    }
+                }
+
+                if (weatherSource == "accuweather") {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = themeBorder.copy(alpha = 0.5f), thickness = 1.dp)
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    Text(
+                        "Cấu hình AccuWeather API Key",
+                        fontWeight = FontWeight.Bold,
+                        color = themeText,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Đăng ký tài khoản miễn phí tại developer.accuweather.com để lấy mã API Key hoạt động của bạn.",
+                        color = themeSecondaryText,
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    var accuKeyInput by remember(accuApiKey) { mutableStateOf(accuApiKey) }
+                    OutlinedTextField(
+                        value = accuKeyInput,
+                        onValueChange = { accuKeyInput = it },
+                        label = { Text("AccuWeather API Key", fontSize = 12.sp) },
+                        placeholder = { Text("Mã API Key cá nhân...", fontSize = 12.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = themeLavender,
+                            unfocusedBorderColor = themeBorder,
+                            focusedTextColor = themeText,
+                            unfocusedTextColor = themeText
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Button(
+                            onClick = {
+                                viewModel.setAccuApiKey(accuKeyInput.trim())
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = themeLavender),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.weight(1.0f)
+                        ) {
+                            Text("Lưu API Key", color = themePillText, fontSize = 12.sp)
+                        }
+
+                        if (accuApiKey.trim().isNotEmpty()) {
+                            OutlinedButton(
+                                onClick = {
+                                    viewModel.setAccuApiKey("")
+                                    accuKeyInput = ""
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder)
+                            ) {
+                                Text("Xóa Key", color = themeText, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Card 3: Information & credits
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = themeSurface.copy(alpha = 0.5f)),
+            border = androidx.compose.foundation.BorderStroke(1.dp, themeBorder.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Thông tin ứng dụng", fontWeight = FontWeight.Bold, color = themeLavender, fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Weather AI là ứng dụng tra cứu thời tiết chuyên sâu kết hợp tính toán địa chỉ GPS thực tế, biểu đồ radar toàn cầu và tư vấn thời trang thông minh từ Gemini AI.",
+                    color = themeSecondaryText,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Cung cấp bởi: Open-Meteo & OpenStreetMap Nominatim", color = themeSecondaryText, fontSize = 11.sp)
+            }
+        }
     }
 }
