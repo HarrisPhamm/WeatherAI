@@ -316,7 +316,8 @@ class WeatherViewModel(application: Application) : AndroidViewModel(application)
                         try {
                             val curTimeStr = raw.currentWeather?.time
                             if (!curTimeStr.isNullOrEmpty() && raw.hourly != null) {
-                                val matchIdx = raw.hourly.time.indexOfFirst { it.startsWith(curTimeStr.substring(0, 13)) }
+                                val searchStr = if (curTimeStr.length >= 13) curTimeStr.substring(0, 13) else curTimeStr
+                                val matchIdx = raw.hourly.time.indexOfFirst { it.startsWith(searchStr) }
                                 if (matchIdx >= 0) {
                                     apparentTemp = raw.hourly.apparentTemperature?.getOrNull(matchIdx)
                                 }

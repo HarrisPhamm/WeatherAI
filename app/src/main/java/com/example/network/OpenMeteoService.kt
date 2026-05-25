@@ -321,34 +321,50 @@ fun mapAccuWeatherIconToWmo(icon: Int): Int {
     }
 }
 
+private val formattersMap = ThreadLocal.withInitial {
+    mutableMapOf<String, java.text.SimpleDateFormat>()
+}
+
+private fun getCachedFormatter(pattern: String, timeZone: java.util.TimeZone? = null): java.text.SimpleDateFormat {
+    val key = if (timeZone != null) "$pattern|${timeZone.id}" else pattern
+    val map = formattersMap.get()!!
+    return map.getOrPut(key) {
+        val sdf = java.text.SimpleDateFormat(pattern, java.util.Locale.US)
+        if (timeZone != null) {
+            sdf.timeZone = timeZone
+        }
+        sdf
+    }
+}
+
 fun convertUtcToLocalString(utcString: String): String {
     if (utcString.isEmpty()) return ""
     try {
-        val formats = listOf(
-            "yyyy-MM-dd'T'HH:mm:ssXXX", 
-            "yyyy-MM-dd'T'HH:mm:ss'Z'",  
-            "yyyy-MM-dd'T'HH:mm'Z'",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd'T'HH:mm"
-        )
+        var fmt = "yyyy-MM-dd'T'HH:mm"
+        var isUtc = false
         
-        var date: java.util.Date? = null
-        for (fmt in formats) {
-            try {
-                val parser = java.text.SimpleDateFormat(fmt, java.util.Locale.US)
-                if (fmt.contains("'Z'")) {
-                    parser.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                }
-                date = parser.parse(utcString)
-                if (date != null) break
-            } catch (e: Exception) {
-                // Ignore and try next
+        if (utcString.contains("+") || (utcString.contains("-") && utcString.lastIndexOf("-") > 10)) {
+            fmt = "yyyy-MM-dd'T'HH:mm:ssXXX"
+        } else if (utcString.endsWith("Z")) {
+            isUtc = true
+            fmt = if (utcString.count { it == ':' } == 2) {
+                "yyyy-MM-dd'T'HH:mm:ss'Z'"
+            } else {
+                "yyyy-MM-dd'T'HH:mm'Z'"
+            }
+        } else {
+            fmt = if (utcString.count { it == ':' } == 2) {
+                "yyyy-MM-dd'T'HH:mm:ss"
+            } else {
+                "yyyy-MM-dd'T'HH:mm"
             }
         }
         
+        val tz = if (isUtc) java.util.TimeZone.getTimeZone("UTC") else null
+        val parser = getCachedFormatter(fmt, tz)
+        val date = parser.parse(utcString)
         if (date != null) {
-            val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm", java.util.Locale.US)
-            formatter.timeZone = java.util.TimeZone.getDefault()
+            val formatter = getCachedFormatter("yyyy-MM-dd'T'HH:mm", java.util.TimeZone.getDefault())
             return formatter.format(date)
         }
     } catch (e: Exception) {
@@ -374,35 +390,35 @@ fun convertUtcToLocalString(utcString: String): String {
 fun convertUtcToApproxLocalString(utcString: String, lon: Double): String {
     if (utcString.isEmpty()) return ""
     try {
-        val formats = listOf(
-            "yyyy-MM-dd'T'HH:mm:ssXXX", 
-            "yyyy-MM-dd'T'HH:mm:ss'Z'",  
-            "yyyy-MM-dd'T'HH:mm'Z'",
-            "yyyy-MM-dd'T'HH:mm:ss",
-            "yyyy-MM-dd'T'HH:mm"
-        )
+        var fmt = "yyyy-MM-dd'T'HH:mm"
+        var isUtc = false
         
-        var date: java.util.Date? = null
-        for (fmt in formats) {
-            try {
-                val parser = java.text.SimpleDateFormat(fmt, java.util.Locale.US)
-                if (fmt.contains("'Z'") || utcString.endsWith("Z")) {
-                    parser.timeZone = java.util.TimeZone.getTimeZone("UTC")
-                }
-                date = parser.parse(utcString)
-                if (date != null) break
-            } catch (e: Exception) {
-                // Ignore and try next
+        if (utcString.contains("+") || (utcString.contains("-") && utcString.lastIndexOf("-") > 10)) {
+            fmt = "yyyy-MM-dd'T'HH:mm:ssXXX"
+        } else if (utcString.endsWith("Z")) {
+            isUtc = true
+            fmt = if (utcString.count { it == ':' } == 2) {
+                "yyyy-MM-dd'T'HH:mm:ss'Z'"
+            } else {
+                "yyyy-MM-dd'T'HH:mm'Z'"
+            }
+        } else {
+            fmt = if (utcString.count { it == ':' } == 2) {
+                "yyyy-MM-dd'T'HH:mm:ss"
+            } else {
+                "yyyy-MM-dd'T'HH:mm"
             }
         }
         
+        val tz = if (isUtc) java.util.TimeZone.getTimeZone("UTC") else null
+        val parser = getCachedFormatter(fmt, tz)
+        val date = parser.parse(utcString)
         if (date != null) {
             val offsetHours = Math.round(lon / 15.0).toInt()
-            val formatter = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm", java.util.Locale.US)
             val sign = if (offsetHours >= 0) "+" else "-"
             val absHours = Math.abs(offsetHours)
             val tzId = String.format(java.util.Locale.US, "GMT%s%02d:00", sign, absHours)
-            formatter.timeZone = java.util.TimeZone.getTimeZone(tzId)
+            val formatter = getCachedFormatter("yyyy-MM-dd'T'HH:mm", java.util.TimeZone.getTimeZone(tzId))
             return formatter.format(date)
         }
     } catch (e: Exception) {
